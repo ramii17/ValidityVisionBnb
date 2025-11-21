@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.log
+
+# Environment
+.env
+venv/  # Virtual environment directory
+
+# Application specific (for local store and temporary files)
+dev_data/
+/tmp/
+static/uploads/

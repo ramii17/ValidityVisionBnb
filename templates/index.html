@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <div class="card shadow-lg mt-5">
+            <div class="card-header bg-primary text-white text-center">
+                <h3 class="mb-0">Scan Product Expiry Date 📸</h3>
+            </div>
+            <div class="card-body p-4">
+                <p class="text-muted text-center">Upload an image of a product label showing the expiry or best-by date (JPEG/PNG only).</p>
+                <form method="POST" action="{{ url_for('upload_scan') }}" enctype="multipart/form-data" class="needs-validation" novalidate>
+                    <div class="mb-3">
+                        <label for="file" class="form-label">Product Image</label>
+                        <input class="form-control" type="file" id="file" name="file" accept=".jpg,.jpeg,.png" required>
+                        <div class="invalid-feedback">
+                            Please select a file to upload.
+                        </div>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success btn-lg">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true" id="loadingSpinner"></span>
+                            Check Validity
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

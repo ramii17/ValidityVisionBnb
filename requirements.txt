@@ -1,0 +1,6 @@
+Flask
+werkzeug
+python-dotenv
+# Google Cloud dependencies (required for deployment to Cloud Run)
+google-cloud-vision
+google-cloud-firestore
