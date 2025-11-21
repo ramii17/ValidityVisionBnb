@@ -34,6 +34,7 @@ class Config:
     """Application configuration settings."""
     
     SECRET_KEY = os.environ.get('SECRET_KEY', 'default_dev_secret_key_12345')
+    # Use environment variable for project ID
     PROJECT_ID = os.environ.get('PROJECT_ID', 'validityvision') 
 
     # Upload folder configuration: /tmp is the only writable directory in Cloud Run
@@ -60,7 +61,6 @@ class LocalStore:
                 json.dump({}, f)
 
     def _read(self):
-        # Handle empty file case
         try:
             with open(self.users_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -88,14 +88,11 @@ class LocalStore:
     def add_scan(self, username, scan_data):
         data = self._read()
         if username not in data:
-            # Should not happen if user is logged in, but as a safeguard:
             data[username] = {'password_hash': None, 'created_at': None, 'scans': []}
         
         s = scan_data.copy()
-        # Use a unique ID for local store scan items
         s.setdefault('id', datetime.utcnow().isoformat() + "_" + str(len(data[username]['scans'])))
         s.setdefault('notification_sent', False)
-        # Store scan history in reverse chronological order
         data[username].setdefault('scans', []).insert(0, s) 
         self._write(data)
 
@@ -149,25 +146,28 @@ def allowed_file(filename):
 def parse_date_string(date_str):
     """
     Attempts to parse a detected date string into a Python date object.
+    Handles DD/MM/YY, DD/MM/YYYY, and DD-MMM-YYYY formats.
     """
     date_formats = [
         ('%d/%m/%y', lambda d: date(d.year, d.month, d.day)), 
-        ('%m/%d/%y', lambda d: date(d.year, d.month, d.day)), 
         ('%d/%m/%Y', lambda d: date(d.year, d.month, d.day)), 
-        ('%m/%d/%Y', lambda d: date(d.year, d.month, d.day)), 
         ('%Y-%m-%d', lambda d: date(d.year, d.month, d.day)), 
+        ('%m/%d/%y', lambda d: date(d.year, d.month, d.day)), 
+        ('%m/%d/%Y', lambda d: date(d.year, d.month, d.day)), 
+        # For dates with month abbreviations (e.g., 18 FEB 2025)
+        ('%d %b %Y', lambda d: date(d.year, d.month, d.day)), 
+        ('%d %B %Y', lambda d: date(d.year, d.month, d.day)), 
         ('%m/%y', lambda d: date(d.year, d.month, 1)),     
         ('%m/%Y', lambda d: date(d.year, d.month, 1)),     
     ]
     
-    clean_date_str = date_str.replace('-', '/').replace('.', '/').replace(' ', '/').strip()
+    clean_date_str = date_str.replace('-', '/').replace('.', '/').replace(' ', ' ').strip()
     
     for fmt, func in date_formats:
         try:
             dt_obj = datetime.strptime(clean_date_str, fmt)
-            # Basic year sanity check (e.g., prevent parsing 01/01/20 to mean 2020 if running in 2025)
             if fmt.endswith(('%y', '%Y')) and dt_obj.year < datetime.now().year - 2:
-                 continue # Skip dates too far in the past
+                 continue 
             return func(dt_obj), fmt
         except ValueError:
             continue
@@ -186,25 +186,49 @@ def detect_expiry_date(image_path):
 
         image = vision.Image(content=content)
 
-        response = vision_client.document_text_detection(image=image)
-        full_text = response.full_text_annotation.text
+        # Using text_detection for potentially better results on single lines, 
+        # though document_text_detection might be better for dense text.
+        # We handle both outcomes to be safe.
+        response = vision_client.text_detection(image=image)
 
-        # Regex patterns to find dates, prioritizing those near keywords
+        full_text = ""
+        if response.full_text_annotation:
+            full_text = response.full_text_annotation.text
+        elif response.text_annotations:
+            # Use the first annotation for the full text block if full_text_annotation is absent
+            full_text = response.text_annotations[0].description
+        
+        # >>> DEBUGGING STEP: PRINTS RAW TEXT TO CONSOLE FOR TROUBLESHOOTING <<<
+        print("--- RAW OCR TEXT START ---")
+        print(full_text)
+        print("--- RAW OCR TEXT END ---")
+        # >>> END DEBUGGING STEP <<<
+
+        # =========================================================================
+        # REVISED REGEX FOR EXPLICIT LABELS AND MONTH NAMES (Handles all provided examples)
+        # =========================================================================
         date_patterns = [
-            # EXP, EXPIRES, BEST BY etc. followed by a date
-            r'(?:EXP|EXPIRES|BEST\s*BY|BB|USE\s*BY)[^0-9/.\-]*(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4})', 
-            # MM/DD/YYYY or DD/MM/YYYY
+            # 1. CRITICAL PRIORITY: Explicit EXP/USE BY/BB followed by a date (Handles all medicine labels, DD/MM/YYYY and DD-MMM-YYYY)
+            r'(?:EXP\.?|EXPIRES|USE\s*BY|UB|BEST\s*BY|BB)\s*[^0-9/.\-:\w]*(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{1,2}[/. -]\w{3}[/. -]\d{4})',
+
+            # 2. HIGH PRIORITY: Date immediately preceding 'USE BY' or 'EXP' (For the biscuit format: 12/10/24 USE BY)
+            r'(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4})\s*(?:USE\s*BY|UB|EXP)',
+            
+            # 3. MEDIUM PRIORITY: General DD/MM/YYYY or MM/DD/YYYY format 
             r'(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4})', 
-            # YYYY-MM-DD
+            
+            # 4. LOW PRIORITY: YYYY-MM-DD
             r'(\d{4}[/. -]\d{1,2}[/. -]\d{1,2})', 
-            # MM/YY or MM/YYYY
+            
+            # 5. LOWEST PRIORITY: MM/YY or MM/YYYY
             r'(\d{1,2}[/. -]\d{2,4})', 
         ]
         
         extracted_date_str = None
         
         for pattern in date_patterns:
-            match = re.search(pattern, full_text, re.IGNORECASE | re.MULTILINE)
+            # Use re.DOTALL to ensure ALL characters, including newlines, are matched
+            match = re.search(pattern, full_text, re.IGNORECASE | re.MULTILINE | re.DOTALL) 
             if match:
                 extracted_date_str = match.group(1).strip()
                 break
@@ -314,7 +338,7 @@ def login():
         if user_data and user_data.get('password_hash') and check_password_hash(user_data['password_hash'], password):
             session['username'] = username
             flash(f'Welcome back, {username}!', 'success')
-            return redirect(url_for('index'))
+            return redirect(url_for('dashboard'))
 
         flash('Invalid username or password.', 'danger')
     return render_template('login.html')
@@ -351,16 +375,18 @@ def upload_scan():
     file_path = os.path.join(Config.UPLOAD_FOLDER, temp_filename)
     file.save(file_path) 
     
-    # Save a copy to static for local UI preview if using local store
+    # === START IMAGE PREVIEW MODIFICATION (FOR LOCAL DISPLAY) ===
     preview_rel = None
-    if local_store is not None:
-        uploads_dir = os.path.join(os.getcwd(), 'static', 'uploads')
-        saved_preview = os.path.join(uploads_dir, temp_filename)
-        try:
-            shutil.copyfile(file_path, saved_preview)
-            preview_rel = os.path.join('static', 'uploads', temp_filename).replace('\\', '/')
-        except Exception as e:
-            print('Failed to save preview copy:', e)
+    # We always attempt to save a copy to static/uploads for local UI preview
+    uploads_dir = os.path.join(os.getcwd(), 'static', 'uploads')
+    saved_preview = os.path.join(uploads_dir, temp_filename)
+    try:
+        shutil.copyfile(file_path, saved_preview)
+        preview_rel = os.path.join('static', 'uploads', temp_filename).replace('\\', '/')
+    except Exception as e:
+        # This will fail on Cloud Run, but that's expected since Cloud Run uses GCS
+        print('Failed to save preview copy for local display:', e)
+    # === END IMAGE PREVIEW MODIFICATION ===
 
     extracted_date_str = None
     is_safe = None
@@ -392,16 +418,18 @@ def upload_scan():
             'notification_sent': False
         }
         
+        # Add preview path to scan_data regardless of store type for consistency
+        if preview_rel:
+            scan_data['preview_path'] = preview_rel
+
         if USERS_COLLECTION is not None:
             # Firestore
             scans_ref = USERS_COLLECTION.document(session['username']).collection('scans')
-            scans_ref.add(scan_data)
+            scans_ref.add(scan_data) # This saves the 'preview_path' to Firestore now
         else:
             # Local store
             scan_data_local = scan_data.copy()
             scan_data_local['scan_date'] = scan_time.isoformat()
-            if preview_rel:
-                scan_data_local['preview_path'] = preview_rel
             local_store.add_scan(session['username'], scan_data_local)
         
         user_friendly_raw_text = f"Full OCR text was: '{raw_text_full[:200]}...'" if raw_text_full and len(raw_text_full) > 200 else raw_text_full if raw_text_full else "No text could be extracted."
@@ -432,8 +460,8 @@ def history():
     user_scans = []
     try:
         if USERS_COLLECTION is not None:
-            scans_ref = USERS_COLLECTION.document(session['username']).collection('scans')
-            query = scans_ref.order_by('scan_date', direction=firestore.Query.DESCENDING).limit(50)
+            # Need to get document ID if we want to use it for deletion later
+            query = USERS_COLLECTION.document(session['username']).collection('scans').order_by('scan_date', direction=firestore.Query.DESCENDING).limit(50)
             user_scans = [doc.to_dict() for doc in query.stream()]
         else:
             user_scans = local_store.get_scans(session['username'], limit=50)
@@ -451,7 +479,6 @@ def history():
         
         if expiry_iso:
             try:
-                # Handle conversion from Firestore Timestamp or string
                 if isinstance(expiry_iso, str):
                     expiry_date = datetime.fromisoformat(expiry_iso).date()
                 elif hasattr(expiry_iso, 'date'):
@@ -544,7 +571,6 @@ def dashboard():
 
 def send_email(to_email, subject, body):
     """Send an email using SMTP server configured via environment variables."""
-    # Reads environment variables set in .env or Cloud Run secrets
     smtp_host = os.environ.get('SMTP_HOST')
     smtp_port = int(os.environ.get('SMTP_PORT', 587))
     smtp_user = os.environ.get('SMTP_USER')
@@ -584,7 +610,7 @@ def send_reminders(dry_run=False):
         for user_doc in users:
             username = user_doc.id
             user_data = user_doc.to_dict()
-            email = user_data.get('email') # Get user's specific email address
+            email = user_data.get('email')
             
             if not email:
                 print(f"Skipping reminders for {username}: No email address registered.")
@@ -607,7 +633,6 @@ def send_reminders(dry_run=False):
                     
                 days_left = (expiry_date - today).days
                 
-                # Reminder threshold: 2 days left
                 if days_left == 2:
                     subject = '⏰ ValidityVision: Product Expiring in 2 Days!'
                     body = f"Hello {username},\n\nOur scan record shows that the product '{s.get('original_filename')}' is expiring on {expiry_date.strftime('%B %d, %Y')}. This is a friendly reminder to use or discard the product within 48 hours.\n\nRegards,\nValidityVision"
@@ -625,7 +650,7 @@ def send_reminders(dry_run=False):
         # Local JSON Store Path
         data = local_store._read()
         for username, u in data.items():
-            email = u.get('email') # Get user's specific email address
+            email = u.get('email')
             scans = u.get('scans', [])
             
             if not email:
@@ -647,7 +672,6 @@ def send_reminders(dry_run=False):
                     
                 days_left = (expiry_date - today).days
                 
-                # Reminder threshold: 2 days left
                 if days_left == 2:
                     subject = '⏰ ValidityVision: Product Expiring in 2 Days!'
                     body = f"Hello {username},\n\nOur scan record shows that the product '{s.get('original_filename')}' is expiring on {expiry_date.strftime('%B %d, %Y')}. This is a friendly reminder to use or discard the product within 48 hours.\n\nRegards,\nValidityVision"
@@ -671,7 +695,6 @@ def scheduled_reminders():
     
     SCHEDULE_TOKEN = os.environ.get('SCHEDULE_TOKEN')
     
-    # Check for the secret token in the request header
     if SCHEDULE_TOKEN:
         if request.headers.get('X-Scheduler-Token') != SCHEDULE_TOKEN:
             print("Access denied: Invalid scheduler token.")
@@ -689,8 +712,6 @@ def scheduled_reminders():
 # --- 6. Application Run Command ---
 
 if __name__ == '__main__':
-    # Allows running reminder job from command-line for testing: 
-    # `python app.py send_reminders [--dry-run]`
     if len(sys.argv) > 1 and sys.argv[1] == 'send_reminders':
         dry = '--dry-run' in sys.argv or '-n' in sys.argv
         print(f"Executing scheduled reminders in {'DRY RUN' if dry else 'LIVE'} mode.")
