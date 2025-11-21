@@ -5,3 +5,5 @@ werkzeug
 google-cloud-vision
 google-cloud-firestore
 gunicorn
+pytesseract
+Pillow
