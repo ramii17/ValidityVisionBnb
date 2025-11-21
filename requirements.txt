@@ -4,6 +4,4 @@ werkzeug
 # Google Cloud Libraries
 google-cloud-vision
 google-cloud-firestore
-# Email/Utilities
-smtplib
-email
+gunicorn
