@@ -17,12 +17,10 @@ load_dotenv()
 
 # Google Cloud Imports - Only needed if deploying to GCP
 try:
-    # Attempt to import GCP libraries
     from google.cloud import vision
     from google.cloud import firestore
     from google.api_core.exceptions import GoogleAPICallError
 except ImportError:
-    # Set to None and fall back to local store if imports fail
     vision = None
     firestore = None
     GoogleAPICallError = Exception
@@ -34,10 +32,8 @@ class Config:
     """Application configuration settings."""
     
     SECRET_KEY = os.environ.get('SECRET_KEY', 'default_dev_secret_key_12345')
-    # Use environment variable for project ID
     PROJECT_ID = os.environ.get('PROJECT_ID', 'validityvision') 
 
-    # Upload folder configuration: /tmp is the only writable directory in Cloud Run
     UPLOAD_FOLDER = '/tmp/uploads' 
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
@@ -45,7 +41,6 @@ class Config:
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# Initialize Google Cloud Clients and Local Fallback
 db = None
 vision_client = None
 USERS_COLLECTION = None
@@ -130,7 +125,6 @@ if vision is not None and firestore is not None and os.environ.get('PROJECT_ID')
         print('Falling back to local JSON store for users/scans (development mode).')
         local_store = LocalStore(os.path.join(os.getcwd(), 'dev_data'))
 else:
-    # Force local store if imports failed or PROJECT_ID is missing
     local_store = LocalStore(os.path.join(os.getcwd(), 'dev_data'))
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
@@ -146,7 +140,6 @@ def allowed_file(filename):
 def parse_date_string(date_str):
     """
     Attempts to parse a detected date string into a Python date object.
-    Handles DD/MM/YY, DD/MM/YYYY, and DD-MMM-YYYY formats.
     """
     date_formats = [
         ('%d/%m/%y', lambda d: date(d.year, d.month, d.day)), 
@@ -154,7 +147,6 @@ def parse_date_string(date_str):
         ('%Y-%m-%d', lambda d: date(d.year, d.month, d.day)), 
         ('%m/%d/%y', lambda d: date(d.year, d.month, d.day)), 
         ('%m/%d/%Y', lambda d: date(d.year, d.month, d.day)), 
-        # For dates with month abbreviations (e.g., 18 FEB 2025)
         ('%d %b %Y', lambda d: date(d.year, d.month, d.day)), 
         ('%d %B %Y', lambda d: date(d.year, d.month, d.day)), 
         ('%m/%y', lambda d: date(d.year, d.month, 1)),     
@@ -176,7 +168,6 @@ def parse_date_string(date_str):
 
 def detect_expiry_date(image_path):
     """Uses Google Cloud Vision API OCR to extract text and find an expiry date."""
-    print(f"Scanning image: {image_path}")
     if vision_client is None:
         return None, "OCR not available - Vision client not configured."
 
@@ -185,33 +176,24 @@ def detect_expiry_date(image_path):
             content = image_file.read()
 
         image = vision.Image(content=content)
-
-        # Using text_detection for potentially better results on single lines, 
-        # though document_text_detection might be better for dense text.
-        # We handle both outcomes to be safe.
         response = vision_client.text_detection(image=image)
 
         full_text = ""
         if response.full_text_annotation:
             full_text = response.full_text_annotation.text
         elif response.text_annotations:
-            # Use the first annotation for the full text block if full_text_annotation is absent
             full_text = response.text_annotations[0].description
         
-        # >>> DEBUGGING STEP: PRINTS RAW TEXT TO CONSOLE FOR TROUBLESHOOTING <<<
         print("--- RAW OCR TEXT START ---")
         print(full_text)
         print("--- RAW OCR TEXT END ---")
-        # >>> END DEBUGGING STEP <<<
 
-        # =========================================================================
-        # REVISED REGEX FOR EXPLICIT LABELS AND MONTH NAMES (Handles all provided examples)
-        # =========================================================================
+        # REVISED REGEX FOR EXPLICIT LABELS
         date_patterns = [
-            # 1. CRITICAL PRIORITY: Explicit EXP/USE BY/BB followed by a date (Handles all medicine labels, DD/MM/YYYY and DD-MMM-YYYY)
+            # 1. CRITICAL PRIORITY: Explicit EXP/USE BY/BB followed by a date 
             r'(?:EXP\.?|EXPIRES|USE\s*BY|UB|BEST\s*BY|BB)\s*[^0-9/.\-:\w]*(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{1,2}[/. -]\w{3}[/. -]\d{4})',
 
-            # 2. HIGH PRIORITY: Date immediately preceding 'USE BY' or 'EXP' (For the biscuit format: 12/10/24 USE BY)
+            # 2. HIGH PRIORITY: Date immediately preceding 'USE BY' or 'EXP' 
             r'(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4})\s*(?:USE\s*BY|UB|EXP)',
             
             # 3. MEDIUM PRIORITY: General DD/MM/YYYY or MM/DD/YYYY format 
@@ -227,7 +209,6 @@ def detect_expiry_date(image_path):
         extracted_date_str = None
         
         for pattern in date_patterns:
-            # Use re.DOTALL to ensure ALL characters, including newlines, are matched
             match = re.search(pattern, full_text, re.IGNORECASE | re.MULTILINE | re.DOTALL) 
             if match:
                 extracted_date_str = match.group(1).strip()
@@ -278,6 +259,13 @@ def check_safety(expiry_date_str):
 def index():
     if 'username' not in session:
         return redirect(url_for('login'))
+    # Redirect logged-in users to the dashboard
+    return redirect(url_for('dashboard'))
+
+@app.route('/scanner')
+def scanner_page():
+    if 'username' not in session:
+        return redirect(url_for('login'))
     return render_template('index.html', username=session.get('username'))
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -293,7 +281,6 @@ def register():
             
         password_hash = generate_password_hash(password)
         if USERS_COLLECTION is not None:
-            # Firestore
             if USERS_COLLECTION.document(username).get().exists:
                 flash('Username already exists! Please login.', 'danger')
                 return redirect(url_for('register'))
@@ -305,7 +292,6 @@ def register():
             }
             USERS_COLLECTION.document(username).set(user_data)
         else:
-            # Local Store
             if local_store.user_exists(username):
                 flash('Username already exists! Please login.', 'danger')
                 return redirect(url_for('register'))
@@ -316,6 +302,10 @@ def register():
                 'created_at': datetime.utcnow().isoformat()
             }
             local_store.create_user(username, user_data)
+        
+        # Send a confirmation email (will fail if SMTP is not configured)
+        send_email(email, "ValidityVision Registration Successful", 
+                   f"Welcome, {username}! Your account is now active.")
         
         flash('Registration successful! Please login.', 'success')
         return redirect(url_for('login'))
@@ -338,8 +328,8 @@ def login():
         if user_data and user_data.get('password_hash') and check_password_hash(user_data['password_hash'], password):
             session['username'] = username
             flash(f'Welcome back, {username}!', 'success')
-            return redirect(url_for('dashboard'))
-
+            return redirect(url_for('dashboard')) # Go to dashboard
+        
         flash('Invalid username or password.', 'danger')
     return render_template('login.html')
 
@@ -357,53 +347,44 @@ def upload_scan():
         
     if 'file' not in request.files:
         flash('No file part', 'danger')
-        return redirect(url_for('index'))
+        return redirect(url_for('dashboard'))
         
     file = request.files['file']
     
     if file.filename == '':
         flash('No selected file.', 'danger')
-        return redirect(url_for('index'))
+        return redirect(url_for('dashboard'))
 
     filename = secure_filename(file.filename)
     
     if not allowed_file(filename):
         flash('File type not allowed (use jpg, png, jpeg).', 'danger')
-        return redirect(url_for('index'))
+        return redirect(url_for('dashboard'))
 
     temp_filename = f"{session['username']}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{filename}"
     file_path = os.path.join(Config.UPLOAD_FOLDER, temp_filename)
     file.save(file_path) 
     
-    # === START IMAGE PREVIEW MODIFICATION (FOR LOCAL DISPLAY) ===
+    # IMAGE PREVIEW MODIFICATION (FOR LOCAL DISPLAY)
     preview_rel = None
-    # We always attempt to save a copy to static/uploads for local UI preview
     uploads_dir = os.path.join(os.getcwd(), 'static', 'uploads')
     saved_preview = os.path.join(uploads_dir, temp_filename)
     try:
         shutil.copyfile(file_path, saved_preview)
         preview_rel = os.path.join('static', 'uploads', temp_filename).replace('\\', '/')
     except Exception as e:
-        # This will fail on Cloud Run, but that's expected since Cloud Run uses GCS
         print('Failed to save preview copy for local display:', e)
-    # === END IMAGE PREVIEW MODIFICATION ===
 
     extracted_date_str = None
     is_safe = None
     safety_message = "An error occurred during scanning."
     raw_text_full = "N/A"
-    
     scan_time = datetime.utcnow()
-    formatted_scan_time = scan_time.strftime('%B %d, %Y, %I:%M:%S %p UTC')
 
     try:
-        # 1. OCR Detection
         extracted_date_str, raw_text_full = detect_expiry_date(file_path)
-        
-        # 2. Safety Check
         is_safe, safety_message = check_safety(extracted_date_str)
         
-        # 3. Prepare/Save Scan History
         expiry_date_obj = None
         if extracted_date_str:
             expiry_date_obj, _ = parse_date_string(extracted_date_str)
@@ -418,37 +399,25 @@ def upload_scan():
             'notification_sent': False
         }
         
-        # Add preview path to scan_data regardless of store type for consistency
         if preview_rel:
             scan_data['preview_path'] = preview_rel
 
         if USERS_COLLECTION is not None:
-            # Firestore
             scans_ref = USERS_COLLECTION.document(session['username']).collection('scans')
-            scans_ref.add(scan_data) # This saves the 'preview_path' to Firestore now
+            scans_ref.add(scan_data)
         else:
-            # Local store
             scan_data_local = scan_data.copy()
             scan_data_local['scan_date'] = scan_time.isoformat()
             local_store.add_scan(session['username'], scan_data_local)
         
-        user_friendly_raw_text = f"Full OCR text was: '{raw_text_full[:200]}...'" if raw_text_full and len(raw_text_full) > 200 else raw_text_full if raw_text_full else "No text could be extracted."
-        
-        return render_template(
-            'result.html',
-            filename=filename,
-            expiry_date=extracted_date_str,
-            is_safe=is_safe,
-            message=safety_message,
-            raw_text=user_friendly_raw_text,
-            formatted_scan_time=formatted_scan_time
-        )
+        # Flash the result message and redirect to dashboard
+        flash(safety_message, 'success' if is_safe is True else 'danger')
+        return redirect(url_for('dashboard'))
         
     except Exception as e:
         flash(f'Scan failed due to an application error: {e}', 'danger')
-        return redirect(url_for('index'))
+        return redirect(url_for('dashboard'))
     finally:
-        # Clean up temporary file in /tmp/
         if os.path.exists(file_path):
             os.remove(file_path) 
 
@@ -460,7 +429,6 @@ def history():
     user_scans = []
     try:
         if USERS_COLLECTION is not None:
-            # Need to get document ID if we want to use it for deletion later
             query = USERS_COLLECTION.document(session['username']).collection('scans').order_by('scan_date', direction=firestore.Query.DESCENDING).limit(50)
             user_scans = [doc.to_dict() for doc in query.stream()]
         else:
@@ -474,7 +442,6 @@ def history():
     enriched = []
     for s in user_scans:
         expiry_iso = s.get('expiry_date_iso') or s.get('expiry_date')
-        notified = s.get('notification_sent', False)
         days_left = None
         
         if expiry_iso:
@@ -492,7 +459,8 @@ def history():
                 days_left = None
                 
         s['_days_left'] = days_left
-        s['_notification_sent'] = bool(notified)
+        s['_notification_sent'] = bool(s.get('notification_sent', False))
+        s['preview_path'] = s.get('preview_path')
         enriched.append(s)
 
     return render_template('history.html', scans=enriched)
@@ -507,10 +475,10 @@ def dashboard():
     try:
         if USERS_COLLECTION is not None:
             scans_ref = USERS_COLLECTION.document(session['username']).collection('scans')
-            query = scans_ref.order_by('scan_date', direction=firestore.Query.DESCENDING).limit(200)
+            query = scans_ref.order_by('scan_date', direction=firestore.Query.DESCENDING).limit(50) 
             user_scans = [doc.to_dict() for doc in query.stream()]
         else:
-            user_scans = local_store.get_scans(session['username'], limit=200)
+            user_scans = local_store.get_scans(session['username'], limit=50)
     except Exception as e:
         flash(f'Error fetching dashboard data: {e}', 'danger')
         user_scans = []
@@ -521,7 +489,6 @@ def dashboard():
     reminders_sent = 0
     for s in user_scans:
         expiry_iso = s.get('expiry_date_iso') or s.get('expiry_date')
-        notified = s.get('notification_sent', False)
         days_left = None
         
         if expiry_iso:
@@ -539,12 +506,11 @@ def dashboard():
                 days_left = None
                 
         s['_days_left'] = days_left
-        s['_notification_sent'] = bool(notified)
+        s['_notification_sent'] = bool(s.get('notification_sent', False))
         
-        # Upcoming is defined as expiring in 2 days or less, but not already expired
-        if days_left is not None and days_left <= 2 and days_left >= 0: 
-            upcoming.append(s)
-        
+        if s['_notification_sent']:
+            reminders_sent += 1
+            
         if s.get('is_safe') is False and days_left is not None and days_left < 0:
             s['_status_class'] = 'expired'
         elif days_left is not None and days_left <= 7 and days_left >= 0:
@@ -552,9 +518,11 @@ def dashboard():
         else:
             s['_status_class'] = 'safe'
 
-        if s['_notification_sent']:
-            reminders_sent += 1
+        if days_left is not None and 0 <= days_left <= 2: 
+            upcoming.append(s)
             
+        s['preview_path'] = s.get('preview_path')
+
         enriched.append(s)
 
     summary = {
@@ -570,7 +538,7 @@ def dashboard():
 # --- Automated Reminder Logic ---
 
 def send_email(to_email, subject, body):
-    """Send an email using SMTP server configured via environment variables."""
+    """Send an email using SMTP server configured via environment variables (with debug logging)."""
     smtp_host = os.environ.get('SMTP_HOST')
     smtp_port = int(os.environ.get('SMTP_PORT', 587))
     smtp_user = os.environ.get('SMTP_USER')
@@ -590,12 +558,28 @@ def send_email(to_email, subject, body):
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
+            
+            # --- DEBUG LOGGING ---
+            print(f"Attempting login as {smtp_user}...")
+            # --- END DEBUG LOGGING ---
+            
             server.login(smtp_user, smtp_pass)
+            
+            # --- DEBUG LOGGING ---
+            print("Login successful! Sending message...") 
+            # --- END DEBUG LOGGING ---
+            
             server.send_message(msg)
         print(f'Email sent successfully to {to_email}')
         return True
+    except smtplib.SMTPAuthenticationError:
+        print(f'Failed to send email to {to_email}: SMTP Authentication Error (Incorrect password or **App Password required**).')
+        return False
+    except smtplib.SMTPConnectError as e:
+        print(f'Failed to send email to {to_email}: Connection Error (Check HOST/PORT/Firewall). Error: {e}')
+        return False
     except Exception as e:
-        print(f'Failed to send email to {to_email}: {e}')
+        print(f'Failed to send email to {to_email}: General Error. Error: {e}')
         return False
 
 
@@ -605,15 +589,17 @@ def send_reminders(dry_run=False):
     reminders_sent = 0
 
     if USERS_COLLECTION is not None:
-        # Firestore Path
+        # FIRESTORE PATH
+        print("Running reminders job using Firestore...")
         users = USERS_COLLECTION.stream()
+        
         for user_doc in users:
             username = user_doc.id
             user_data = user_doc.to_dict()
-            email = user_data.get('email')
+            email = user_data.get('email') # Get email from root user document
             
             if not email:
-                print(f"Skipping reminders for {username}: No email address registered.")
+                print(f"Skipping reminders for {username}: No email address registered in Firestore.")
                 continue
 
             scans_ref = USERS_COLLECTION.document(username).collection('scans')
@@ -627,7 +613,12 @@ def send_reminders(dry_run=False):
                     continue
                 
                 try:
-                    expiry_date = datetime.fromisoformat(expiry_iso).date()
+                    if isinstance(expiry_iso, str):
+                        expiry_date = datetime.fromisoformat(expiry_iso).date()
+                    elif hasattr(expiry_iso, 'date'):
+                        expiry_date = expiry_iso.date()
+                    else:
+                        continue 
                 except Exception:
                     continue
                     
@@ -638,23 +629,24 @@ def send_reminders(dry_run=False):
                     body = f"Hello {username},\n\nOur scan record shows that the product '{s.get('original_filename')}' is expiring on {expiry_date.strftime('%B %d, %Y')}. This is a friendly reminder to use or discard the product within 48 hours.\n\nRegards,\nValidityVision"
                     
                     if dry_run:
-                        print(f'(dry) Would send to {email} about {s.get("original_filename")}')
+                        print(f'(dry) Would send to {email} about {s.get("original_filename")} (Expiring in 2 days)')
                     else:
                         if send_email(email, subject, body):
                             try:
-                                scan_doc.reference.update({'notification_sent': True})
+                                scan_doc.reference.update({'notification_sent': True}) 
                                 reminders_sent += 1
                             except Exception as e:
                                 print(f'Failed to mark notification_sent in Firestore for {scan_doc.id}: {e}')
     else:
-        # Local JSON Store Path
+        # LOCAL JSON STORE PATH
+        print("Running reminders job using Local JSON Store...")
         data = local_store._read()
         for username, u in data.items():
             email = u.get('email')
             scans = u.get('scans', [])
             
             if not email:
-                print(f"Skipping reminders for {username}: No email address registered.")
+                print(f"Skipping reminders for {username}: No email address registered in local store.")
                 continue
                 
             for s in scans:
@@ -677,7 +669,7 @@ def send_reminders(dry_run=False):
                     body = f"Hello {username},\n\nOur scan record shows that the product '{s.get('original_filename')}' is expiring on {expiry_date.strftime('%B %d, %Y')}. This is a friendly reminder to use or discard the product within 48 hours.\n\nRegards,\nValidityVision"
 
                     if dry_run:
-                        print(f'(dry) Would send to {email} about {s.get("original_filename")}')
+                        print(f'(dry) Would send to {email} about {s.get("original_filename")} (Expiring in 2 days)')
                     else:
                         if send_email(email, subject, body):
                             local_store.mark_notification_sent(username, scan_id)
@@ -691,8 +683,6 @@ def send_reminders(dry_run=False):
 
 @app.route('/scheduled_reminders', methods=['GET'])
 def scheduled_reminders():
-    """Secure endpoint triggered by a scheduled job (e.g., Cloud Scheduler)."""
-    
     SCHEDULE_TOKEN = os.environ.get('SCHEDULE_TOKEN')
     
     if SCHEDULE_TOKEN:
@@ -717,5 +707,4 @@ if __name__ == '__main__':
         print(f"Executing scheduled reminders in {'DRY RUN' if dry else 'LIVE'} mode.")
         send_reminders(dry_run=dry)
     else:
-        # Standard Flask run command
         app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))

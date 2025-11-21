@@ -1,6 +1,9 @@
 flask
 python-dotenv
 werkzeug
+# Google Cloud Libraries
 google-cloud-vision
 google-cloud-firestore
-google-api-core
+# Email/Utilities
+smtplib
+email
