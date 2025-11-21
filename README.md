@@ -21,13 +21,9 @@ This project is created as part of our Innovation Challenge.
 ### 📷 Product Scan
 - Upload image
 - AI extracts expiry date
-- Saves record in SQLite database
+- Saves record in firestore database
 
 ### 🔔 Email Notification
 - Welcome email (first time only)
 - Expiry alert email (if expiry < 5 days)
-
----
-
-## 🏗 Project Architecture
 
